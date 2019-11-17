@@ -4,14 +4,15 @@ import math
 import statistics
 import scipy.ndimage as sc
 
-class Found(Exception) : pass
-
 class StaveRecogniter:
-    def __init__(self):
-        cv2.namedWindow('image', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('image', 800, 800)
+    def __init__(self, DEBUG=False):
+        self.debugMode = DEBUG
+        if self.debugMode:
+            cv2.namedWindow('image', cv2.WINDOW_NORMAL)
+            cv2.resizeWindow('image', 800, 800)
 
     def findRotAngle(self, lines):
+        ''' Function that takes median from set of line's angles which are calculated on set of lines '''
         angles = []
         for line in lines:
             x1, y1, x2, y2 = line[0]
@@ -36,7 +37,30 @@ class StaveRecogniter:
             angle = math.degrees(angle)
             angles.append(angle)
 
+        # Output is in degrees
         return statistics.median(angles)
+
+    def checkForInverse(self, stave_thresholded):
+        ''' Function that check amount of white pixels on both sides of picture and assume if stave must be inverted '''
+        left = 0
+        right = 0
+        transposed = np.transpose(stave_thresholded)
+
+        for i in range(math.floor(stave_thresholded.shape[1] / 4)):
+                filledLeft = np.where(stave_thresholded[: , i] > 10.0)
+                left += len(filledLeft[0])
+                filledRight = np.where(stave_thresholded[: , stave_thresholded.shape[1] - (i+1)] > 10.0)
+                right += len(filledRight[0])
+
+        print(f"Left = {left} ; Right = {right}")
+        # cv2.imshow('image', stave_thresholded)
+        # cv2.waitKey()
+
+        if 1.1 * left < right < 1.35 * left:
+            return True
+        else:
+            return False
+
 
     def adjustGamma(self, image, gamma=1.0):
         invGamma = 1.0 / gamma
@@ -46,6 +70,7 @@ class StaveRecogniter:
         return cv2.LUT(image, table)
 
     def groupLines(self, image):
+        ''' Parse image from top to bottom, find lines and group them to staves '''
         output = []
 
         thickness = 1
@@ -78,7 +103,7 @@ class StaveRecogniter:
                         # print(f"xLeft = {np.amin(xLeft)}")
                         # print(f"xRight = {np.amax(xRight)}")
                         # print(f"Thickness = {thickness}")
-                        # print(f"Distance = {np.median(distance)}")
+                        # print(f"Distances = {distance}")
                         good = True
                         for d in distance:
                             if d > np.median(distance) * 5:
@@ -105,51 +130,72 @@ class StaveRecogniter:
 
         return output
 
-    def houghTransform(self):
-        img = cv2.imread("5.jpg")
+    def run(self, image_input):
+        ''' Main function that take an image input and crop out staves '''
 
+        # Read an image
+        img = cv2.imread(image_input)
+
+        # Make a matrix copy with image shapes filled with zeroes
         matZero = np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
-        matZero2 = np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
 
-
+        # Filter image with gauss blur
         gauss = cv2.GaussianBlur(img, (13,13), cv2.BORDER_DEFAULT)
 
+        # Turn image into black and white colors
         gray = cv2.cvtColor(gauss, cv2.COLOR_BGR2GRAY)
 
+        # Adjust gamma on image to extract darker and brighter elements
         gamma_adjusted = self.adjustGamma(gray, 1.2)
 
+        # Adjust threshold on image to highly extract dark and bright elements
         thresholded = cv2.adaptiveThreshold(gamma_adjusted, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 13, 5)
 
-
+        # Dilation and erosion to remove 'noises' on a picture
         img_dilation = cv2.dilate(thresholded, np.ones((5,5), np.uint8) , iterations=1) 
         img_erosion = cv2.erode(img_dilation, np.ones((5,5), np.uint8) , iterations=1) 
 
+        # This parameter is used in Hough Transform function's and it depend's on image resolution
         minLine = (img.shape[0] + img.shape[1]) / 4
 
-        print(minLine)
-
-
+        # Do hough transform to initially extract lines
         lines = cv2.HoughLinesP(img_erosion, 1, np.pi/360, int(minLine / 2), minLineLength=minLine , maxLineGap=minLine/2)
 
+        # Draw lines on black copy of image
         if lines is not None:
             for line in lines:
                 x1, y1, x2, y2 = line[0]
                 cv2.line(matZero, (x1, y1), (x2, y2), (255), 2)
 
-        #edges = cv2.Canny(matZero, 20, 230, apertureSize=3)
-
-        # print(f"angle = {self.findRotAngle(lines)}")
-
+        # Find angle to rotate an image and it's copy
         rotateAngle = self.findRotAngle(lines)
 
+        thresholded_rotated = sc.rotate(img_erosion, rotateAngle)
         rotated = sc.rotate(matZero, rotateAngle)
-
         image_rotated = sc.rotate(img, rotateAngle)
 
-
+        # Find staves from black image
         linesVertices = self.groupLines(rotated)
-        
 
+        if self.debugMode:
+            cv2.imshow('image', img)
+            cv2.waitKey()
+            cv2.imshow('image', gauss)
+            cv2.waitKey()
+            cv2.imshow('image', gray)
+            cv2.waitKey()
+            cv2.imshow('image', gamma_adjusted)
+            cv2.waitKey()
+            cv2.imshow('image', thresholded)
+            cv2.waitKey()
+            cv2.imshow('image', img_erosion)
+            cv2.waitKey()
+            cv2.imshow('image', image_rotated)
+            cv2.waitKey()
+            cv2.imshow('image', rotated)
+            cv2.waitKey()
+        
+        outputNo = 1
         for vertices in linesVertices:
             x1, y1 = vertices[0]
             x2, y2 = vertices[1]
@@ -157,14 +203,15 @@ class StaveRecogniter:
             x4, y4 = vertices[3]
             dist = vertices[4][0] * 3
             # print(f"x1 = {x1}, x3 = {x3}, y1 = {y1}, y3 = {y3}, distance = {dist}")
+            # Find borders of cutted image
             # Left border
             if x1 - dist < 0:
                 left = 0
             else:
                 left = x1 - dist
             # Right border
-            if x3 + dist > img.shape[1]:
-                right = img.shape[1]
+            if x3 + dist > image_rotated.shape[1]:
+                right = image_rotated.shape[1]
             else:
                 right = x3 + dist
             # Up border
@@ -173,26 +220,38 @@ class StaveRecogniter:
             else:
                 up = y1 - dist
             # Down border
-            if y3 + dist > img.shape[0]:
-                down = img.shape[0]
+            if y3 + dist > image_rotated.shape[0]:
+                down = image_rotated.shape[0]
             else:
                 down = y3 + dist
             #print(f"Result: left = {left}, right = {right}, up = {up}, down = {down}")
-            lineArray = image_rotated[up:down, left:right]
-            cv2.imshow('image', lineArray)
-            cv2.waitKey()
-            
-        cv2.imshow('image', rotated)
-        cv2.waitKey()
-        
+            #Cut an image from original
+            staveThresholdedArray = thresholded_rotated[up:down, left:right]
+            staveArray = image_rotated[up:down, left:right]
 
-        # cv2.imshow('image', matZero)
-        # cv2.waitKey()
-        print("end")
+            if self.checkForInverse(staveThresholdedArray):
+                outputArray = cv2.flip(staveArray, -1)
+            else:
+                outputArray = staveArray
+
+            if self.debugMode:
+                cv2.imshow('image', outputArray)
+                cv2.waitKey()
+            else:
+                # Save results
+                fileNameFragments = image_input.rsplit('.', 1)
+                cv2.imwrite(fileNameFragments[0] + '_out' + str(outputNo) + '.' + fileNameFragments[1], outputArray)
+            outputNo += 1
+
+        print(f"Found {outputNo - 1} staves total.")
+
+        print("Finish!")
+
 
 if __name__ == '__main__':
     
-    sR = StaveRecogniter()
+    # Turn DEBUG to False if you want to save output, otherwise keep True
+    sR = StaveRecogniter(DEBUG=True)
 
-    sR.houghTransform()
+    sR.run("input/20.jpg")
     
